@@ -2,6 +2,7 @@
 // Imagens: chamada síncrona. Vídeos: fila assíncrona, finalizada pelo worker (/api/cron/tick).
 import { db } from "./db";
 import { logActivity } from "./activity";
+import { mirrorToStorage } from "./storage";
 
 export function mediaEnabled() {
   return Boolean(process.env.FAL_KEY);
@@ -12,6 +13,17 @@ const VIDEO_MODEL = () => process.env.FAL_VIDEO_MODEL || "fal-ai/kling-video/v2.
 
 function headers() {
   return { Authorization: `Key ${process.env.FAL_KEY}`, "Content-Type": "application/json" };
+}
+
+/** Copia a mídia gerada para o R2 (link permanente); se o R2 não estiver configurado, mantém a URL original. */
+async function persist(url: string, companyId?: string | null) {
+  try {
+    const m = await mirrorToStorage(url, `ai/${companyId ?? "geral"}`);
+    if (m) return { url: m.publicUrl, key: m.key };
+  } catch (err) {
+    console.error("[media] falha ao copiar para o R2, usando URL original", err);
+  }
+  return { url, key: null as string | null };
 }
 
 type AspectRatio = "1:1" | "4:5" | "9:16" | "16:9";
@@ -59,9 +71,10 @@ export async function generateImage(opts: {
     });
     const json = (await res.json()) as { images?: { url: string }[]; detail?: unknown };
     if (!res.ok || !json.images?.[0]?.url) throw new Error(`fal ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
+    const stored = await persist(json.images[0].url, opts.companyId);
     const updated = await db.mediaAsset.update({
       where: { id: asset.id },
-      data: { status: "READY", url: json.images[0].url },
+      data: { status: "READY", url: stored.url, storageKey: stored.key },
     });
     await logActivity({
       type: "media.image",
@@ -147,7 +160,8 @@ export async function pollPendingVideos() {
       const resultRes = await fetch(asset.resultUrl!, { headers: headers() });
       const result = (await resultRes.json()) as { video?: { url: string } };
       if (result.video?.url) {
-        await db.mediaAsset.update({ where: { id: asset.id }, data: { status: "READY", url: result.video.url } });
+        const stored = await persist(result.video.url, asset.companyId);
+        await db.mediaAsset.update({ where: { id: asset.id }, data: { status: "READY", url: stored.url, storageKey: stored.key } });
         await logActivity({ type: "media.video", summary: "Vídeo gerado e pronto", companyId: asset.companyId });
         done++;
       } else {

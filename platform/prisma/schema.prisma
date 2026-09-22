@@ -35,6 +35,14 @@ model Company {
   brandGuidelines String?       @db.Text // cores, público, o que evitar
   notes           String?       @db.Text
   postsPerMonth   Int?
+  // Redes sociais (Meta Graph API) — token de página criptografado
+  fbPageId          String?
+  fbPageName        String?
+  igUserId          String?
+  igUsername        String?
+  metaToken         String?       @db.Text
+  autoPublish       Boolean       @default(true)
+  crosspostFacebook Boolean       @default(false)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -47,6 +55,8 @@ model Company {
   conversations Conversation[]
   activities    Activity[]
   leads         Lead[]         @relation("ConvertedLead")
+  meetings      Meeting[]
+  reports       Report[]
 }
 
 // ─────────────────────────── Conteúdo ───────────────────────────
@@ -98,6 +108,14 @@ model Post {
   approvedAt    DateTime?
   feedback      String?     @db.Text // último pedido de alteração do cliente
   sentForApprovalAt DateTime?
+  // Publicação automática
+  publishState    String? // null | CONTAINER | PUBLISHED | FAILED | MANUAL
+  igContainerId   String?
+  igMediaId       String?
+  fbPostId        String?
+  permalink       String?
+  publishError    String?     @db.Text
+  publishAttempts Int         @default(0)
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -148,7 +166,8 @@ model MediaAsset {
   prompt     String?     @db.Text
   url        String?
   status     MediaStatus @default(PENDING)
-  provider   String? // fal | upload
+  provider   String? // fal | upload | r2
+  storageKey String? // chave no Cloudflare R2
   externalId String? // id do job assíncrono no provedor
   statusUrl  String?
   resultUrl  String?
@@ -204,7 +223,15 @@ model Invoice {
   status      InvoiceStatus @default(PENDING)
   paidAt      DateTime?
   paymentLink String?
-  remindedAt  DateTime?
+  remindedAt  DateTime? // lembrete de atraso
+  // Mercado Pago
+  mpPreferenceId String?
+  mpPaymentId    String?
+  pixCode        String?   @db.Text // Pix copia e cola
+  pixQrBase64    String?   @db.Text
+  sentAt         DateTime? // cobrança enviada ao cliente
+  dueReminderAt  DateTime? // lembrete antes do vencimento
+  paidVia        String?
   createdAt   DateTime      @default(now())
 }
 
@@ -300,6 +327,7 @@ model Lead {
   conversations Conversation[]
   tasks         Task[]
   activities    Activity[]
+  meetings      Meeting[]
 
   @@index([stage])
   @@index([nextFollowUpAt])
@@ -387,4 +415,61 @@ model Setting {
   key       String   @id
   value     String   @db.Text
   updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────── Agenda ───────────────────────────
+
+enum MeetingStatus {
+  SCHEDULED
+  DONE
+  CANCELED
+  NO_SHOW
+}
+
+model Meeting {
+  id            String        @id @default(cuid())
+  title         String
+  description   String?       @db.Text
+  startAt       DateTime
+  endAt         DateTime
+  leadId        String?
+  lead          Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  companyId     String?
+  company       Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  attendeeEmail String?
+  meetLink      String?
+  eventId       String? // Google Calendar
+  eventLink     String?
+  status        MeetingStatus @default(SCHEDULED)
+  bookedBy      String        @default("ADMIN")
+  reminderSentAt DateTime?
+  createdAt     DateTime      @default(now())
+
+  @@index([startAt])
+}
+
+// ─────────────────────────── Relatórios ───────────────────────────
+
+enum ReportStatus {
+  DRAFT
+  SENT
+}
+
+model Report {
+  id          String       @id @default(cuid())
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  period      String // YYYY-MM
+  metrics     Json
+  headline    String?
+  summary     String?      @db.Text // versão curta para WhatsApp
+  analysis    String?      @db.Text // análise completa
+  recommendations Json?
+  status      ReportStatus @default(DRAFT)
+  publicToken String       @unique @default(cuid())
+  sentAt      DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([companyId, period])
 }

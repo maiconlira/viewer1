@@ -19,8 +19,13 @@ import { sendWhatsApp } from "../whatsapp";
 import { agentRespond, startOnboarding, startOutreach } from "./whatsapp-agent";
 import { getOrCreateConversation } from "../whatsapp";
 import { logActivity } from "../activity";
-import { AGENCY_NAME, date, money, normalizePhone } from "../utils";
+import { AGENCY_NAME, date, money, normalizePhone, parseLocalDate } from "../utils";
 import { getSetting } from "../settings";
+import { publishPost } from "../publishing";
+import { createCharge, sendInvoice } from "../mercadopago";
+import { ensureMonthlyInvoices } from "../billing";
+import { availableSlots, bookMeeting, cancelMeeting } from "../agenda";
+import { generateReport, periodLabel, previousPeriod, sendReport } from "../reports";
 
 const ACTOR = "Diretor IA";
 
@@ -30,8 +35,8 @@ const aspect = z.enum(["1:1", "4:5", "9:16", "16:9"]);
 
 function parseDate(value?: string) {
   if (!value) return undefined;
-  const d = new Date(value);
-  if (isNaN(d.getTime())) throw new Error(`Data inválida: ${value}. Use ISO 8601 (ex.: 2026-10-05T10:00:00-03:00).`);
+  const d = parseLocalDate(value);
+  if (!d) throw new Error(`Data inválida: ${value}. Use ISO 8601 (ex.: 2026-10-05T10:00:00-03:00).`);
   return d;
 }
 
@@ -477,6 +482,128 @@ function directorTools(): AgentTool[] {
       },
     }),
 
+    // ── Publicação ──
+    tool({
+      name: "publish_post_now",
+      description: "Publica agora no Instagram/Facebook uma postagem já aprovada pelo cliente.",
+      schema: z.object({ post_id: z.string() }),
+      run: async ({ post_id }) => {
+        const post = await db.post.findUniqueOrThrow({ where: { id: post_id } });
+        if (!["APPROVED", "SCHEDULED"].includes(post.status)) {
+          return `A postagem está "${post.status}". Só publico conteúdo aprovado pelo cliente.`;
+        }
+        return publishPost(post_id, ACTOR);
+      },
+    }),
+
+    // ── Cobrança ──
+    tool({
+      name: "send_invoice",
+      description: "Gera a cobrança no Mercado Pago (link + Pix) e envia ao cliente pelo WhatsApp.",
+      schema: z.object({ invoice_id: z.string(), kind: z.enum(["new", "reminder", "overdue"]).optional() }),
+      run: async ({ invoice_id, kind }) => sendInvoice(invoice_id, kind ?? "new", ACTOR),
+    }),
+    tool({
+      name: "create_payment_link",
+      description: "Gera o link de pagamento (Mercado Pago) de uma cobrança sem enviar ao cliente.",
+      schema: z.object({ invoice_id: z.string() }),
+      run: async ({ invoice_id }) => {
+        const inv = await createCharge(invoice_id);
+        return { paymentLink: inv.paymentLink, pix: Boolean(inv.pixCode) };
+      },
+    }),
+    tool({
+      name: "generate_monthly_invoices",
+      description: "Gera as mensalidades do mês para todos os clientes ativos (e envia a cobrança se o Mercado Pago estiver configurado).",
+      schema: z.object({ send: z.boolean().optional() }),
+      run: async ({ send }) => ({ created: await ensureMonthlyInvoices({ force: true, send }) }),
+    }),
+
+    // ── Agenda ──
+    tool({
+      name: "check_availability",
+      description: "Próximos horários livres na agenda do dono.",
+      schema: z.object({ days_ahead: z.number().int().min(1).max(30).optional() }),
+      run: async ({ days_ahead }) => availableSlots(days_ahead ?? 7, 12),
+    }),
+    tool({
+      name: "book_meeting",
+      description: "Marca reunião (Google Agenda + Meet quando conectado). Use um `start` livre de check_availability.",
+      schema: z.object({
+        start: z.string(),
+        title: z.string(),
+        lead_id: z.string().optional(),
+        company_id: z.string().optional(),
+        attendee_email: z.string().optional(),
+        notify_whatsapp: z.boolean().optional().describe("Avisa o lead/cliente no WhatsApp com data e link"),
+      }),
+      run: async (i) => {
+        const m = await bookMeeting({
+          start: parseDate(i.start)!,
+          title: i.title,
+          leadId: i.lead_id,
+          companyId: i.company_id,
+          attendeeEmail: i.attendee_email,
+          bookedBy: ACTOR,
+        });
+        if (i.notify_whatsapp) {
+          const phone = i.lead_id
+            ? (await db.lead.findUnique({ where: { id: i.lead_id } }))?.phone
+            : i.company_id
+              ? (await db.company.findUnique({ where: { id: i.company_id } }))?.whatsapp
+              : null;
+          if (phone) {
+            await sendWhatsApp({
+              phone,
+              author: ACTOR,
+              text: `Reunião confirmada para ${date(m.startAt, true)} ✅${m.meetLink ? `\nLink: ${m.meetLink}` : ""}`,
+            });
+          }
+        }
+        return { id: m.id, startAt: date(m.startAt, true), meetLink: m.meetLink };
+      },
+    }),
+    tool({
+      name: "list_meetings",
+      description: "Próximas reuniões marcadas.",
+      schema: z.object({}),
+      run: async () =>
+        (
+          await db.meeting.findMany({
+            where: { status: "SCHEDULED", startAt: { gte: new Date() } },
+            orderBy: { startAt: "asc" },
+            take: 30,
+            include: { lead: { select: { name: true } }, company: { select: { name: true } } },
+          })
+        ).map((m) => ({ id: m.id, title: m.title, when: date(m.startAt, true), with: m.lead?.name ?? m.company?.name, meetLink: m.meetLink })),
+    }),
+    tool({
+      name: "cancel_meeting",
+      description: "Cancela uma reunião (e o evento no Google Agenda).",
+      schema: z.object({ meeting_id: z.string() }),
+      run: async ({ meeting_id }) => {
+        await cancelMeeting(meeting_id, ACTOR);
+        return "Reunião cancelada.";
+      },
+    }),
+
+    // ── Relatórios ──
+    tool({
+      name: "generate_report",
+      description: "Gera (ou refaz) o relatório mensal de desempenho de um cliente como rascunho. Período no formato AAAA-MM (padrão: mês anterior).",
+      schema: z.object({ company_id: z.string(), period: z.string().regex(/^\d{4}-\d{2}$/).optional() }),
+      run: async ({ company_id, period }) => {
+        const r = await generateReport(company_id, period ?? previousPeriod());
+        return { report_id: r.id, periodo: periodLabel(r.period), destaque: r.headline };
+      },
+    }),
+    tool({
+      name: "send_report",
+      description: "Envia um relatório ao cliente pelo WhatsApp (resumo + link da versão completa).",
+      schema: z.object({ report_id: z.string() }),
+      run: async ({ report_id }) => sendReport(report_id, ACTOR),
+    }),
+
     // ── Tarefas ──
     tool({
       name: "create_task",
@@ -528,7 +655,7 @@ async function systemPrompt() {
 Como trabalhar:
 - Execute a ordem de ponta a ponta. Encadeie as ferramentas necessárias (ex.: criar posts → escrever legendas → gerar artes → enviar para aprovação) sem pedir confirmação para passos intermediários óbvios.
 - Busque IDs com as ferramentas de listagem; nunca invente IDs.
-- Ações irreversíveis ou sensíveis com clientes que a ordem não pediu explicitamente (enviar contrato, cobrar, mensagens com valores) — não faça; sugira no relatório final.
+- Ações irreversíveis ou sensíveis com clientes que a ordem não pediu explicitamente (enviar contrato, cobrar, publicar, enviar relatório, mensagens com valores) — não faça; sugira no relatório final.
 - Datas: hoje é ${date(new Date(), true)} (fuso America/Sao_Paulo). Use ISO 8601 com -03:00.
 - Ao terminar, responda com um relatório curto em português: o que foi feito (com nomes), o que falhou e próximos passos sugeridos. Use markdown simples.
 ${profile ? `\nPerfil da agência:\n${profile}` : ""}

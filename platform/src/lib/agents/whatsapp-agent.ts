@@ -18,14 +18,18 @@ import {
   requestPostChanges,
   updateLeadStage,
 } from "../services";
-import { AGENCY_NAME, date, money, postStatusLabel } from "../utils";
+import { AGENCY_NAME, appUrl, date, money, postStatusLabel } from "../utils";
 import { getSetting } from "../settings";
+import { availableSlots, bookMeeting } from "../agenda";
+import { mercadoPagoEnabled, sendInvoice } from "../mercadopago";
+import { periodLabel } from "../reports";
 
 const NO_REPLY = "NO_REPLY";
 
 const ROLE_PLAYBOOK: Record<AgentRole, string> = {
   SDR: `Você faz o primeiro contato e a qualificação de potenciais clientes.
 Objetivo: gerar conversa, entender o negócio (segmento, tamanho, desafios nas redes, orçamento, quem decide) e, se houver fit, avançar para reunião ou proposta.
+Para reuniões: check_availability, ofereça 2 ou 3 opções, e book_meeting quando o lead escolher (peça o e-mail para o convite).
 Use set_lead_stage para CONTACTED/QUALIFIED/MEETING e update_lead para registrar tudo o que descobrir. Quando o lead estiver qualificado e quiser proposta, use transfer_to_agent com CLOSER.`,
   CLOSER: `Você conduz a proposta e o fechamento.
 Apresente os serviços e planos da agência conforme o perfil da agência, trate objeções com empatia e conduza para a decisão.
@@ -115,6 +119,41 @@ function commonTools(conv: ConversationFull, actor: string): AgentTool[] {
   ];
 }
 
+function meetingTools(conv: ConversationFull, actor: string, opts: { leadId?: string; companyId?: string; name: string }): AgentTool[] {
+  return [
+    tool({
+      name: "check_availability",
+      description: "Consulta os próximos horários livres na agenda do dono da agência para uma reunião.",
+      schema: z.object({ days_ahead: z.number().int().min(1).max(21).optional() }),
+      run: async ({ days_ahead }) => {
+        const slots = await availableSlots(days_ahead ?? 7);
+        return slots.length ? slots : "Sem horários livres no período. Ofereça escalar para o responsável.";
+      },
+    }),
+    tool({
+      name: "book_meeting",
+      description:
+        "Marca a reunião num horário livre (use o `start` exato devolvido por check_availability). Confirme o horário com o contato antes de marcar. Se tiver o e-mail, o convite com link do Meet é enviado.",
+      schema: z.object({ start: z.string(), topic: z.string(), email: z.string().optional() }),
+      run: async ({ start, topic, email }) => {
+        const d = new Date(start);
+        if (isNaN(d.getTime())) throw new Error("Horário inválido — use o valor `start` de check_availability.");
+        const m = await bookMeeting({
+          start: d,
+          title: `${topic} — ${opts.name}`,
+          description: `Agendado pelo WhatsApp por ${actor}. Contato: ${conv.phone}`,
+          leadId: opts.leadId,
+          companyId: opts.companyId,
+          attendeeEmail: email,
+          bookedBy: actor,
+        });
+        if (email && opts.leadId) await db.lead.update({ where: { id: opts.leadId }, data: { email } });
+        return `Reunião marcada para ${date(m.startAt, true)}.${m.meetLink ? ` Link do Google Meet: ${m.meetLink}` : ""} Um lembrete será enviado 1h antes.`;
+      },
+    }),
+  ];
+}
+
 function clientTools(company: Company, actor: string): AgentTool[] {
   const ownPost = async (postId: string) => {
     const post = await db.post.findFirst({ where: { id: postId, companyId: company.id } });
@@ -177,12 +216,36 @@ function clientTools(company: Company, actor: string): AgentTool[] {
           orderBy: { dueDate: "asc" },
         });
         return invoices.map((i) => ({
+          id: i.id,
           description: i.description,
           amount: money(i.amount),
           dueDate: date(i.dueDate),
           status: i.status,
           paymentLink: i.paymentLink,
         }));
+      },
+    }),
+    tool({
+      name: "send_payment_info",
+      description:
+        "Envia ao cliente, em mensagens separadas, o link de pagamento e o Pix copia e cola de uma cobrança em aberto (use o id de list_open_invoices).",
+      schema: z.object({ invoice_id: z.string() }),
+      run: async ({ invoice_id }) => {
+        const inv = await db.invoice.findFirst({ where: { id: invoice_id, companyId: company.id, status: { in: ["PENDING", "OVERDUE"] } } });
+        if (!inv) throw new Error("Cobrança em aberto não encontrada para este cliente.");
+        if (!mercadoPagoEnabled() && !inv.paymentLink) return "Não há link de pagamento. Use escalate_to_admin para o financeiro enviar.";
+        await sendInvoice(inv.id, inv.status === "OVERDUE" ? "overdue" : "reminder", actor);
+        return "Dados de pagamento enviados. Não repita o link na sua resposta; apenas confirme de forma breve.";
+      },
+    }),
+    tool({
+      name: "get_latest_report",
+      description: "Resumo e link do último relatório mensal de desempenho do cliente.",
+      schema: z.object({}),
+      run: async () => {
+        const r = await db.report.findFirst({ where: { companyId: company.id, status: "SENT" }, orderBy: { period: "desc" } });
+        if (!r) return "Ainda não há relatório enviado para este cliente.";
+        return { mes: periodLabel(r.period), destaque: r.headline, resumo: r.summary, link: appUrl(`/relatorio/${r.publicToken}`) };
       },
     }),
     tool({
@@ -254,24 +317,6 @@ function leadTools(conv: ConversationFull, lead: Lead, actor: string): AgentTool
         await db.lead.update({ where: { id: lead.id }, data: { nextFollowUpAt: at } });
         await logActivity({ type: "lead.followup", summary: `Follow-up agendado (${reason}) para ${date(at, true)}`, actor, leadId: lead.id });
         return `Follow-up agendado para ${date(at, true)}.`;
-      },
-    }),
-    tool({
-      name: "request_meeting",
-      description: "Registra que o lead quer uma reunião. Cria pendência para o dono confirmar o horário.",
-      schema: z.object({ preferred_times: z.string(), topic: z.string() }),
-      run: async ({ preferred_times, topic }) => {
-        await updateLeadStage(lead.id, "MEETING", actor, `Reunião solicitada: ${preferred_times}`);
-        await escalateToAdmin({
-          title: `Confirmar reunião com ${lead.name}`,
-          description: `Horários sugeridos: ${preferred_times}\nAssunto: ${topic}`,
-          leadId: lead.id,
-          actor,
-        });
-        const link = await getSetting("meeting_link");
-        return link
-          ? `Reunião registrada. Envie este link de agendamento ao lead: ${link}`
-          : "Reunião registrada. Diga que vai confirmar o horário e retorna em breve.";
       },
     }),
     tool({
@@ -400,8 +445,13 @@ export async function agentRespond(conversationId: string, instruction?: string)
   history.reverse();
 
   const tools = [...commonTools(conv, actor)];
-  if (conv.company) tools.push(...clientTools(conv.company, actor));
-  else if (conv.lead) tools.push(...leadTools(conv, conv.lead, actor));
+  if (conv.company) {
+    tools.push(...clientTools(conv.company, actor));
+    tools.push(...meetingTools(conv, actor, { companyId: conv.company.id, name: conv.company.name }));
+  } else if (conv.lead) {
+    tools.push(...leadTools(conv, conv.lead, actor));
+    tools.push(...meetingTools(conv, actor, { leadId: conv.lead.id, name: conv.lead.businessName ?? conv.lead.name }));
+  }
 
   const result = await runAgent({
     system: await buildSystemPrompt(conv, agent, role),

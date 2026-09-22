@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { Badge, Collapsible, Empty, PageHeader, Section, Stat } from "@/components/ui";
-import { SubmitButton } from "@/components/client";
-import { createInvoice, generateMonthlyInvoices, setInvoiceStatus } from "../../actions";
-import { date, invoiceStatusLabel, money } from "@/lib/utils";
+import { CopyButton, SubmitButton } from "@/components/client";
+import { createChargeAction, createInvoice, generateMonthlyInvoices, sendInvoiceAction, setInvoiceStatus } from "../../actions";
+import { mercadoPagoEnabled } from "@/lib/mercadopago";
+import { date, invoiceStatusLabel, money, zonedParts, zonedTime } from "@/lib/utils";
 
 export default async function Financeiro() {
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const nowP = zonedParts(now);
+  const monthStart = zonedTime(nowP.year, nowP.month, 1);
   const [companies, invoices, paidMonth, mrr] = await Promise.all([
     db.company.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     db.invoice.findMany({
@@ -19,13 +21,18 @@ export default async function Financeiro() {
     db.company.aggregate({ _sum: { monthlyFee: true }, where: { status: { in: ["ACTIVE", "ONBOARDING"] } } }),
   ]);
   const open = invoices.filter((i) => i.status === "PENDING").reduce((s, i) => s + Number(i.amount), 0);
+  const mp = mercadoPagoEnabled();
   const overdue = invoices.filter((i) => i.status === "OVERDUE").reduce((s, i) => s + Number(i.amount), 0);
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Financeiro"
-        subtitle="Cobranças dos clientes. Faturas vencidas são marcadas e lembradas automaticamente pelo WhatsApp."
+        subtitle={
+          mp
+            ? "Mercado Pago ativo: mensalidades geradas, cobradas por WhatsApp (link + Pix) e baixadas automaticamente quando pagas."
+            : "Configure MP_ACCESS_TOKEN para cobrar pelo Mercado Pago com baixa automática. Sem isso, os lembretes usam o link que você informar."
+        }
         actions={<form action={generateMonthlyInvoices}><SubmitButton className="btn-secondary" pending="Gerando...">Gerar mensalidades do mês</SubmitButton></form>}
       />
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -42,7 +49,8 @@ export default async function Financeiro() {
           <input name="description" required placeholder="Descrição" className="input" />
           <input name="amount" required placeholder="Valor" className="input" />
           <input name="dueDate" type="date" required className="input" />
-          <input name="paymentLink" placeholder="Link de pagamento (Pix/boleto)" className="input" />
+          {!mp && <input name="paymentLink" placeholder="Link de pagamento (Pix/boleto)" className="input" />}
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="send" /> Enviar cobrança no WhatsApp</label>
           <SubmitButton>Criar</SubmitButton>
         </form>
       </Collapsible>
@@ -63,9 +71,20 @@ export default async function Financeiro() {
                     </Badge>
                   </td>
                   <td className="text-right">
-                    {i.status !== "PAID" && (
-                      <form action={setInvoiceStatus.bind(null, i.id, "PAID")}><SubmitButton className="btn-secondary btn-sm">Recebido</SubmitButton></form>
+                    {i.status !== "PAID" && i.status !== "CANCELED" && (
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {mp && !i.paymentLink && (
+                          <form action={createChargeAction.bind(null, i.id)}><SubmitButton className="btn-secondary btn-sm" pending="...">Gerar cobrança</SubmitButton></form>
+                        )}
+                        {i.paymentLink && <CopyButton text={i.paymentLink} label="Link" />}
+                        {i.pixCode && <CopyButton text={i.pixCode} label="Pix" />}
+                        <form action={sendInvoiceAction.bind(null, i.id)}>
+                          <SubmitButton className="btn-secondary btn-sm" pending="...">{i.sentAt ? "Reenviar" : "Enviar"}</SubmitButton>
+                        </form>
+                        <form action={setInvoiceStatus.bind(null, i.id, "PAID")}><SubmitButton className="btn-secondary btn-sm">Recebido</SubmitButton></form>
+                      </div>
                     )}
+                    {i.status === "PAID" && <span className="text-xs text-slate-400">{date(i.paidAt)}{i.paidVia ? ` · ${i.paidVia}` : ""}</span>}
                   </td>
                 </tr>
               ))}

@@ -4,7 +4,20 @@ import { db } from "@/lib/db";
 import { Badge, Collapsible, Empty, PageHeader, Section, Stat } from "@/components/ui";
 import { SubmitButton } from "@/components/client";
 import { CompanyFields } from "@/components/forms";
-import { aiIdeas, createPostAction, deleteCompany, onboardCompany, updateCompany } from "../../../actions";
+import {
+  aiIdeas,
+  createPostAction,
+  deleteCompany,
+  linkMetaPage,
+  onboardCompany,
+  saveMetaManual,
+  savePublishOptions,
+  unlinkMeta,
+  updateCompany,
+} from "../../../actions";
+import { checkCompanyConnection, listMetaPages, type MetaPage } from "@/lib/meta";
+import { getSecret } from "@/lib/settings";
+import { periodLabel } from "@/lib/reports";
 import {
   contractStatusLabel,
   date,
@@ -14,8 +27,15 @@ import {
   postStatusLabel,
 } from "@/lib/utils";
 
-export default async function EmpresaDetalhe({ params }: { params: Promise<{ id: string }> }) {
+export default async function EmpresaDetalhe({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ testar?: string }>;
+}) {
   const { id } = await params;
+  const { testar } = await searchParams;
   const company = await db.company.findUnique({
     where: { id },
     include: {
@@ -26,9 +46,24 @@ export default async function EmpresaDetalhe({ params }: { params: Promise<{ id:
       tasks: { where: { status: { not: "DONE" } }, orderBy: { createdAt: "desc" } },
       conversations: { take: 1 },
       activities: { orderBy: { createdAt: "desc" }, take: 15 },
+      reports: { orderBy: { period: "desc" }, take: 6 },
+      meetings: { where: { status: "SCHEDULED", startAt: { gte: new Date() } }, orderBy: { startAt: "asc" }, take: 5 },
     },
   });
   if (!company) notFound();
+
+  // Páginas disponíveis na conta do Facebook conectada (para vincular a esta empresa)
+  const metaUserToken = await getSecret("meta_user_token");
+  let pages: MetaPage[] = [];
+  let pagesError: string | null = null;
+  if (metaUserToken && !company.metaToken) {
+    try {
+      pages = await listMetaPages(metaUserToken);
+    } catch (err) {
+      pagesError = (err as Error).message;
+    }
+  }
+  const connection = testar && company.metaToken ? await checkCompanyConnection(company) : null;
 
   const pending = company.posts.filter((p) => p.status === "PENDING_APPROVAL" || p.status === "CHANGES_REQUESTED").length;
   const openInvoices = company.invoices.filter((i) => i.status === "PENDING" || i.status === "OVERDUE");
@@ -137,6 +172,89 @@ export default async function EmpresaDetalhe({ params }: { params: Promise<{ id:
         </div>
 
         <div className="space-y-6">
+          <section id="redes" className="card">
+            <h2 className="mb-3">Redes sociais</h2>
+            {company.metaToken ? (
+              <div className="space-y-3 text-sm">
+                {company.igUserId && <div>📸 Instagram: <b>@{company.igUsername ?? company.igUserId}</b></div>}
+                {company.fbPageId && <div>📘 Facebook: <b>{company.fbPageName ?? company.fbPageId}</b></div>}
+                {!company.igUserId && <p className="text-xs text-amber-700">Esta página não tem Instagram profissional vinculado.</p>}
+                {connection && (
+                  <div className={`rounded p-2 text-xs ${connection.ok ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-800"}`}>
+                    {connection.ok ? `✓ Conexão ok ${"instagram" in connection ? `— ${connection.instagram}` : ""}` : `Falhou: ${connection.error}`}
+                  </div>
+                )}
+                <form key={`${company.autoPublish}-${company.crosspostFacebook}`} action={savePublishOptions.bind(null, company.id)} className="space-y-1">
+                  <label className="flex items-center gap-2"><input type="checkbox" name="autoPublish" defaultChecked={company.autoPublish} /> Publicar automaticamente após aprovação</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" name="crosspostFacebook" defaultChecked={company.crosspostFacebook} /> Também postar no Facebook</label>
+                  <SubmitButton className="btn-secondary btn-sm">Salvar</SubmitButton>
+                </form>
+                <div className="flex gap-2">
+                  <Link href={`/empresas/${company.id}?testar=1#redes`} className="btn-secondary btn-sm">Testar conexão</Link>
+                  <form action={unlinkMeta.bind(null, company.id)}>
+                    <SubmitButton className="btn-danger btn-sm" confirm="Desconectar as redes desta empresa?">Desconectar</SubmitButton>
+                  </form>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 text-sm">
+                {metaUserToken ? (
+                  pagesError ? (
+                    <p className="text-xs text-rose-700">Erro ao listar páginas: {pagesError}. Reconecte em Configurações.</p>
+                  ) : (
+                    <form action={linkMetaPage.bind(null, company.id)} className="space-y-2">
+                      <select name="pageId" required className="input">
+                        <option value="">Escolha a página do cliente...</option>
+                        {pages.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{p.instagram_business_account ? ` + IG @${p.instagram_business_account.username ?? p.instagram_business_account.id}` : " (sem Instagram)"}
+                          </option>
+                        ))}
+                      </select>
+                      <SubmitButton className="btn-primary btn-sm">Vincular</SubmitButton>
+                    </form>
+                  )
+                ) : (
+                  <p className="muted">
+                    Conecte sua conta do Facebook em <Link href="/configuracoes" className="link">Configurações</Link> para escolher a página e o Instagram deste cliente.
+                  </p>
+                )}
+                <details>
+                  <summary className="cursor-pointer text-xs text-slate-500">Configurar manualmente (IDs + token)</summary>
+                  <form action={saveMetaManual.bind(null, company.id)} className="mt-2 space-y-2">
+                    <input name="igUserId" placeholder="ID do Instagram profissional" className="input" />
+                    <input name="fbPageId" placeholder="ID da página do Facebook" className="input" />
+                    <input name="token" type="password" placeholder="Token de acesso da página" className="input" />
+                    <SubmitButton className="btn-secondary btn-sm">Salvar</SubmitButton>
+                  </form>
+                </details>
+              </div>
+            )}
+          </section>
+
+          <Section title="Relatórios" actions={<Link href={`/relatorios?companyId=${company.id}`} className="link text-sm">Todos →</Link>}>
+            {company.reports.length === 0 ? (
+              <Empty>Nenhum relatório ainda.</Empty>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {company.reports.map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-2">
+                    <Link href={`/relatorios/${r.id}`} className="link">{periodLabel(r.period)}</Link>
+                    <Badge className={r.status === "SENT" ? "bg-emerald-100 text-emerald-800" : undefined}>{r.status === "SENT" ? "Enviado" : "Rascunho"}</Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+
+          {company.meetings.length > 0 && (
+            <Section title="Próximas reuniões">
+              <ul className="space-y-1 text-sm">
+                {company.meetings.map((m) => <li key={m.id}>📅 {date(m.startAt, true)} — {m.title}</li>)}
+              </ul>
+            </Section>
+          )}
+
           <Section title="Contratos">
             {company.contracts.length === 0 ? (
               <Empty>Nenhum contrato.</Empty>

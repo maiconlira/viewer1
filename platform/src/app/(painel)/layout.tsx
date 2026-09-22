@@ -11,11 +11,13 @@ const NAV = [
   { href: "/conteudo", icon: "🖼", label: "Postagens" },
   { href: "/cronograma", icon: "📅", label: "Cronograma" },
   { href: "/ideias", icon: "💡", label: "Ideias" },
+  { href: "/agenda", icon: "🗓", label: "Agenda" },
   { href: "/whatsapp", icon: "💬", label: "WhatsApp" },
   { href: "/prospeccao", icon: "🎯", label: "Prospecção" },
   { href: "/agentes", icon: "🤖", label: "Equipe de IA" },
   { href: "/contratos", icon: "📄", label: "Contratos" },
   { href: "/financeiro", icon: "💰", label: "Financeiro" },
+  { href: "/relatorios", icon: "📊", label: "Relatórios" },
   { href: "/tarefas", icon: "✅", label: "Tarefas" },
   { href: "/configuracoes", icon: "⚙", label: "Configurações" },
 ];

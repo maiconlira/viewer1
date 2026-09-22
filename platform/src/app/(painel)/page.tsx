@@ -12,7 +12,7 @@ import type { LeadStage } from "@prisma/client";
 const STAGES: LeadStage[] = ["NEW", "CONTACTED", "QUALIFIED", "MEETING", "PROPOSAL", "WON"];
 
 export default async function Dashboard() {
-  const [s, escalations, activity, upcoming] = await Promise.all([
+  const [s, escalations, activity, upcoming, meetings] = await Promise.all([
     dashboardSummary(),
     db.task.findMany({
       where: { forAdmin: true, status: { not: "DONE" } },
@@ -26,6 +26,12 @@ export default async function Dashboard() {
       orderBy: { scheduledAt: "asc" },
       take: 6,
       include: { company: { select: { name: true } } },
+    }),
+    db.meeting.findMany({
+      where: { status: "SCHEDULED", startAt: { gte: new Date() } },
+      orderBy: { startAt: "asc" },
+      take: 5,
+      include: { lead: { select: { name: true } }, company: { select: { name: true } } },
     }),
   ]);
 
@@ -137,6 +143,22 @@ export default async function Dashboard() {
           )}
         </Section>
       </div>
+
+      {meetings.length > 0 && (
+        <Section title="Próximas reuniões" actions={<Link href="/agenda" className="link text-sm">Agenda →</Link>}>
+          <ul className="divide-y divide-slate-100">
+            {meetings.map((m) => (
+              <li key={m.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                <span>
+                  <b>{date(m.startAt, true)}</b> — {m.title}
+                  <span className="text-slate-400"> · {m.lead?.name ?? m.company?.name ?? ""} · {m.bookedBy}</span>
+                </span>
+                {m.meetLink && <a href={m.meetLink} target="_blank" className="link">Meet</a>}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       <Section title="Atividade recente">
         {activity.length === 0 ? (

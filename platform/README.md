@@ -12,18 +12,21 @@ Plataforma para operar uma agência de marketing inteira com **uma pessoa só**.
 | Módulo | O que faz |
 |---|---|
 | **Painel** | KPIs (clientes, MRR, aprovações, inadimplência), funil, pendências escaladas pela IA e atividade recente |
-| **Diretor IA** (`/comando`) | Ordens em linguagem natural, com cerca de 35 ferramentas: clientes, conteúdo, artes, WhatsApp, contratos, financeiro, leads e equipe |
+| **Diretor IA** (`/comando`) | Ordens em linguagem natural, com 39 ferramentas: clientes, conteúdo, artes, publicação, WhatsApp, contratos, cobrança, agenda, relatórios, leads e equipe |
 | **Empresas** | Cadastro, marca (tom de voz e diretrizes usados pela IA), visão 360° e onboarding feito pela IA |
-| **Postagens** | Kanban: ideia → produção → aprovação → alteração → aprovado → agendado → publicado. Legenda, hashtags e briefing escritos por IA; imagem e vídeo gerados por IA |
+| **Postagens** | Kanban: ideia → produção → aprovação → alteração → aprovado → agendado → publicado. Legenda, hashtags e briefing escritos por IA; imagem e vídeo gerados por IA; upload direto de fotos/vídeos |
+| **Publicação automática** | Post aprovado pelo cliente é publicado sozinho no Instagram (feed, carrossel, reels, stories) e/ou Facebook na data agendada, com link do post salvo |
 | **Cronograma** | Calendário mensal por empresa |
 | **Ideias** | Banco de ideias com três origens: equipe, IA e cliente (pelo WhatsApp) |
 | **WhatsApp** | Caixa de entrada, conversas em tempo real e botão para assumir a conversa ou devolver para a IA. Você pode dar ordens ao agente de cada conversa |
 | **Prospecção** | Funil de leads, importação em massa (colando da planilha), primeiro contato e follow-ups automáticos pela IA, conversão em cliente |
 | **Equipe de IA** | Crie e edite funcionários: nome, função, personalidade, metas e cadência de follow-up |
 | **Contratos** | Redação por IA, envio pelo WhatsApp e assinatura eletrônica (registra nome, CPF, data/hora e IP) |
-| **Financeiro** | Mensalidades, cobranças e lembrete automático de fatura vencida |
+| **Financeiro** | Mensalidades geradas sozinhas, cobrança no Mercado Pago (link Pix/boleto/cartão + Pix copia e cola) enviada no WhatsApp, lembretes e **baixa automática** quando o cliente paga |
+| **Agenda** | Horários livres do Google Agenda; os agentes de IA marcam reuniões com link do Meet e convite por e-mail; lembrete no WhatsApp 1h antes |
+| **Relatórios** | Relatório mensal por cliente com métricas do Instagram + produção da agência, análise escrita pela IA, enviado no WhatsApp com link para a versão completa |
 | **Tarefas** | Quadro operacional com as pendências que a IA escalou para você |
-| **Páginas do cliente** | `/aprovar/[token]` para aprovar ou pedir alteração de um post, `/contrato/[token]` para assinar |
+| **Páginas do cliente** | `/aprovar/[token]` para aprovar ou pedir alteração de um post, `/contrato/[token]` para assinar, `/relatorio/[token]` com o relatório do mês |
 
 ## Como a IA trabalha
 
@@ -39,8 +42,9 @@ WhatsApp ──webhook──▶ /api/webhooks/whatsapp
                                    │
                          resposta enviada no WhatsApp + tudo registrado no painel
 
-Rotina (/api/cron/tick, a cada 5 min): follow-ups de leads, vídeos prontos,
-posts aprovados → agendados, faturas vencidas + lembrete, contratos vencendo.
+Rotina (/api/cron/tick, a cada 5 min): publica posts aprovados na hora marcada, follow-ups
+de leads, vídeos prontos, gera e envia mensalidades, lembretes de vencimento/atraso,
+lembrete de reunião, relatórios no dia 1, contratos vencendo.
 ```
 
 - Modelo: `claude-opus-5` (configurável em `CLAUDE_MODEL`), com pensamento adaptativo e **fallback automático no servidor** se houver recusa de segurança.
@@ -85,7 +89,54 @@ Sem `ANTHROPIC_API_KEY` o painel funciona, mas a IA fica desligada. Sem provedor
 
 ## Imagens e vídeos com IA
 
-Configure `FAL_KEY` ([fal.ai](https://fal.ai)). Os modelos padrão são `fal-ai/flux/dev` (imagem) e Kling (vídeo), e podem ser trocados em `FAL_IMAGE_MODEL` e `FAL_VIDEO_MODEL`. As imagens são geradas na hora. Os vídeos entram numa fila e a rotina automática busca o resultado quando fica pronto.
+Configure `FAL_KEY` ([fal.ai](https://fal.ai)). Os modelos padrão são `fal-ai/flux/dev` (imagem) e Kling (vídeo), e podem ser trocados em `FAL_IMAGE_MODEL` e `FAL_VIDEO_MODEL`. As imagens são geradas na hora; os vídeos entram numa fila e a rotina busca o resultado. Com o R2 configurado, tudo que a IA gera é copiado para o seu bucket (link permanente).
+
+## Publicação automática (Instagram e Facebook)
+
+1. Em [developers.facebook.com](https://developers.facebook.com), crie um app do tipo **Empresa**, adicione **Login do Facebook** e cadastre o redirect `{APP_URL}/api/meta/callback`. Preencha `META_APP_ID` e `META_APP_SECRET`.
+2. Os Instagrams dos clientes precisam ser **profissionais** e vinculados a uma Página do Facebook que a sua conta administra (o jeito mais fácil é o cliente dar acesso à sua agência no Business Manager).
+3. Em **Configurações → Conectar Facebook**, faça login uma vez. Depois, na tela de cada empresa, em **Redes sociais**, escolha a página/Instagram do cliente.
+4. A partir daí: post **aprovado** + data agendada → a rotina publica sozinha. Falhou 3 vezes → vira pendência para você. Só conteúdo aprovado é publicado.
+
+Enquanto o app estiver em modo de desenvolvimento, funciona para contas que têm papel no app (você). Para uso com contas de terceiros, a Meta exige a revisão do app com as permissões `instagram_content_publish`, `pages_manage_posts` e `instagram_manage_insights`.
+
+## Cobrança (Mercado Pago)
+
+1. Em [mercadopago.com.br/developers](https://www.mercadopago.com.br/developers) → Suas integrações → crie uma aplicação → **Credenciais de produção** → `MP_ACCESS_TOKEN`.
+2. Em **Webhooks**, cadastre `{APP_URL}/api/webhooks/mercadopago` com o evento **Pagamentos** e copie a assinatura secreta para `MP_WEBHOOK_SECRET`.
+3. Nas empresas, preencha **mensalidade**, **dia de vencimento** e **e-mail** (o e-mail habilita o Pix copia e cola; sem ele o cliente paga pelo link).
+
+Fluxo: X dias antes do vencimento (configurável) a mensalidade é criada, a cobrança é gerada e enviada no WhatsApp; perto do vencimento vai um lembrete; se vencer, um aviso. Quando o cliente paga, o Mercado Pago avisa o sistema, a fatura é baixada e o cliente recebe a confirmação. O status é sempre conferido na API do Mercado Pago, então uma notificação falsa não baixa fatura.
+
+## Agenda (Google Agenda + Meet)
+
+1. No [Google Cloud Console](https://console.cloud.google.com): ative a **Google Calendar API**, configure a tela de consentimento OAuth e crie uma credencial **ID do cliente OAuth → Aplicativo da Web** com o redirect `{APP_URL}/api/google/callback`. Preencha `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET`.
+2. Em **Configurações → Conectar Google Agenda**. Ajuste dias, horário e duração das reuniões.
+
+Os agentes (SDR, Closer, Atendimento) consultam os horários livres, oferecem opções ao contato e marcam a reunião; o evento aparece na sua agenda com link do Meet e convite para o e-mail do contato. Sem o Google conectado, a agenda funciona só dentro da plataforma (sem Meet).
+
+## Upload de arquivos (Cloudflare R2)
+
+1. No painel da Cloudflare → R2: crie um bucket, ative o **acesso público** (domínio `r2.dev` ou domínio próprio) e crie um **token de API do R2** com permissão de leitura e escrita.
+2. Preencha `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` e `R2_PUBLIC_URL`.
+3. No bucket → Settings → **CORS policy**, libere o envio a partir do seu painel:
+
+```json
+[{ "AllowedOrigins": ["https://SEU-APP_URL"], "AllowedMethods": ["PUT", "GET"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600 }]
+```
+
+O arquivo vai direto do navegador para o R2 (até 500 MB), sem passar pelo servidor.
+
+## Relatórios mensais
+
+No dia 1 de cada mês a rotina gera o relatório do mês anterior para cada cliente ativo. Por padrão fica como **rascunho** e cria uma pendência para você revisar e enviar; em Configurações dá para mudar para "gerar e enviar sozinho" ou desligar. Também dá para gerar a qualquer momento em **Relatórios** ou pedir ao Diretor IA.
+
+## Segurança
+
+- Tokens da Meta e do Google ficam **criptografados** no banco (AES-256-GCM com `ENCRYPTION_KEY`).
+- Toda ação do painel confere o login no servidor; as páginas do cliente só acessam o registro do próprio link secreto.
+- Webhooks validados: WhatsApp (segredo na URL ou assinatura da Meta), Mercado Pago (assinatura + consulta do pagamento na API).
+- Datas de calendário usam o fuso `AGENCY_TZ` (padrão America/Sao_Paulo), independentemente do fuso do servidor.
 
 ## Estrutura do código
 
@@ -101,6 +152,11 @@ platform/
 │  ├─ content.ts               # ideias, legendas, contratos com IA
 │  ├─ media.ts                 # geração de imagem/vídeo (fal.ai)
 │  ├─ whatsapp.ts              # Evolution API / Cloud API / simulação
+│  ├─ meta.ts, publishing.ts   # Instagram/Facebook: OAuth, publicação, métricas
+│  ├─ mercadopago.ts, billing.ts # cobrança, Pix, webhooks, mensalidades
+│  ├─ google.ts, agenda.ts     # Google Agenda, horários livres, reuniões
+│  ├─ reports.ts               # relatórios mensais
+│  ├─ storage.ts               # Cloudflare R2
 │  └─ automation.ts            # rotina automática
 ├─ src/app/(painel)/...        # telas do painel
 ├─ src/app/aprovar, contrato   # páginas públicas do cliente
@@ -109,8 +165,7 @@ platform/
 
 ## Próximos passos sugeridos
 
-- Publicação automática no Instagram/Facebook (Meta Graph API) quando o post estiver agendado
-- Cobrança integrada (Asaas, Mercado Pago ou Stripe) com link de Pix gerado automaticamente
-- Agendamento de reuniões com Google Calendar
-- Relatórios mensais de desempenho por cliente (Meta Insights) gerados e enviados pela IA
-- Upload de arquivos direto (S3/R2) em vez de URL
+- Publicação no TikTok e LinkedIn (hoje esses posts viram pendência para publicar à mão)
+- Assinatura recorrente no Mercado Pago (débito automático no cartão)
+- Receber fotos e áudios que o cliente manda no WhatsApp direto na pasta da empresa
+- Painel de tráfego pago (Meta Ads) dentro dos relatórios

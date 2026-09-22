@@ -11,12 +11,16 @@ import {
   aiVideo,
   deleteMedia,
   deletePost,
+  publishNow,
   sendForApproval,
   setPostStatus,
   updatePost,
 } from "../../../actions";
 import { appUrl, date, postStatusColor, postStatusLabel, toInputDateTime } from "@/lib/utils";
 import { mediaEnabled } from "@/lib/media";
+import { storageEnabled } from "@/lib/storage";
+import { canPublish } from "@/lib/meta";
+import { Uploader } from "@/components/uploader";
 
 export default async function PostDetalhe({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -26,7 +30,10 @@ export default async function PostDetalhe({ params }: { params: Promise<{ id: st
   });
   if (!post) notFound();
   const approvalLink = appUrl(`/aprovar/${post.approvalToken}`);
-  const processing = post.media.some((m) => m.status === "PROCESSING" || m.status === "PENDING");
+  const processing =
+    post.media.some((m) => m.status === "PROCESSING" || m.status === "PENDING") || post.publishState === "CONTAINER";
+  const connected = canPublish(post.company, post.platform);
+  const approved = post.status === "APPROVED" || post.status === "SCHEDULED";
   const defaultAspect = post.format === "STORY" || post.format === "REELS" ? "9:16" : "4:5";
 
   return (
@@ -134,6 +141,11 @@ export default async function PostDetalhe({ params }: { params: Promise<{ id: st
               <select name="duration" className="input w-20"><option value="5">5s</option><option value="10">10s</option></select>
               <SubmitButton className="btn-ai flex-1" pending="Solicitando...">🎬 Gerar vídeo</SubmitButton>
             </form>
+            {storageEnabled() && (
+              <div className="mt-3">
+                <Uploader postId={post.id} folder={`posts/${post.companyId}`} />
+              </div>
+            )}
             <form action={addMediaUrl.bind(null, post.id)} className="mt-3 flex gap-2">
               <input name="url" type="url" required placeholder="Ou cole a URL de uma arte pronta" className="input flex-1" />
               <SubmitButton className="btn-secondary">Anexar</SubmitButton>
@@ -153,6 +165,43 @@ export default async function PostDetalhe({ params }: { params: Promise<{ id: st
               <form action={adminApprovePost.bind(null, post.id)}><SubmitButton className="btn-secondary btn-sm">Marcar aprovado</SubmitButton></form>
               <form action={setPostStatus.bind(null, post.id, "PUBLISHED")}><SubmitButton className="btn-secondary btn-sm">Marcar publicado</SubmitButton></form>
             </div>
+          </Section>
+
+          <Section title="Publicação">
+            <div className="space-y-2 text-sm">
+              <div>
+                Destino:{" "}
+                {connected ? (
+                  <Badge className="bg-emerald-100 text-emerald-800">
+                    {post.platform === "INSTAGRAM" ? `Instagram @${post.company.igUsername ?? post.company.igUserId}` : `Facebook ${post.company.fbPageName ?? ""}`}
+                  </Badge>
+                ) : (
+                  <Badge className="bg-amber-100 text-amber-800">sem conexão — publicação manual</Badge>
+                )}
+              </div>
+              <div>
+                Automática: {post.company.autoPublish ? "sim, na data agendada após aprovação" : "desligada para esta empresa"}
+              </div>
+              {post.publishState === "CONTAINER" && <div className="text-sky-700">⏳ Instagram processando a mídia…</div>}
+              {post.permalink && (
+                <a href={post.permalink} target="_blank" className="link block truncate">🔗 {post.permalink}</a>
+              )}
+              {post.publishError && post.publishState !== "PUBLISHED" && (
+                <div className="rounded bg-rose-50 p-2 text-xs text-rose-800">
+                  Erro ({post.publishAttempts}/3): {post.publishError}
+                </div>
+              )}
+            </div>
+            {connected && approved && post.publishState !== "PUBLISHED" && (
+              <form action={publishNow.bind(null, post.id)} className="mt-3">
+                <SubmitButton className="btn-primary w-full" pending="Publicando..." confirm="Publicar agora nas redes do cliente?">
+                  📤 Publicar agora
+                </SubmitButton>
+              </form>
+            )}
+            {!connected && (
+              <Link href={`/empresas/${post.companyId}#redes`} className="link mt-3 inline-block text-sm">Conectar redes da empresa →</Link>
+            )}
           </Section>
 
           <div className="flex justify-between text-sm">

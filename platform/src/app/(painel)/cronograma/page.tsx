@@ -2,10 +2,9 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { PageHeader } from "@/components/ui";
 import { CompanyFilter } from "@/components/company-filter";
-import { postStatusColor } from "@/lib/utils";
+import { postStatusColor, TZ, zonedParts, zonedTime } from "@/lib/utils";
 
 const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
-const TZ = process.env.TZ || "America/Sao_Paulo";
 
 function dayKey(d: Date) {
   return d.toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
@@ -14,23 +13,20 @@ function dayKey(d: Date) {
 export default async function Cronograma({ searchParams }: { searchParams: Promise<{ m?: string; companyId?: string }> }) {
   const sp = await searchParams;
   const now = new Date();
-  const [y, m] = (sp.m ?? `${now.getFullYear()}-${now.getMonth() + 1}`).split("-").map(Number);
-  const first = new Date(y, m - 1, 1);
-  const last = new Date(y, m, 0);
-  const gridStart = new Date(first);
-  gridStart.setDate(first.getDate() - first.getDay());
-  const days = Array.from({ length: Math.ceil((first.getDay() + last.getDate()) / 7) * 7 }, (_, i) => {
-    const d = new Date(gridStart);
-    d.setDate(gridStart.getDate() + i);
-    return d;
-  });
+  const nowP = zonedParts(now);
+  const [y, m] = (sp.m ?? `${nowP.year}-${nowP.month}`).split("-").map(Number);
+  // grade do mês calculada no fuso da agência (meio-dia evita bordas de fuso)
+  const first = zonedTime(y, m, 1, 12);
+  const firstWeekday = zonedParts(first).weekday;
+  const lastDay = zonedParts(zonedTime(y, m + 1, 0, 12)).day;
+  const days = Array.from({ length: Math.ceil((firstWeekday + lastDay) / 7) * 7 }, (_, i) => zonedTime(y, m, 1 - firstWeekday + i, 12));
 
   const [companies, posts] = await Promise.all([
     db.company.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     db.post.findMany({
       where: {
         companyId: sp.companyId || undefined,
-        scheduledAt: { gte: new Date(y, m - 1, 1 - 7), lte: new Date(y, m, 7) },
+        scheduledAt: { gte: zonedTime(y, m, 1 - 7), lte: zonedTime(y, m + 1, 7) },
       },
       orderBy: { scheduledAt: "asc" },
       include: { company: { select: { name: true } } },
@@ -52,7 +48,7 @@ export default async function Cronograma({ searchParams }: { searchParams: Promi
     <div className="space-y-6">
       <PageHeader
         title="Cronograma"
-        subtitle={first.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
+        subtitle={first.toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: TZ })}
         actions={
           <>
             <CompanyFilter companies={companies} current={sp.companyId} extra={{ m: `${y}-${m}` }} />
@@ -68,10 +64,11 @@ export default async function Cronograma({ searchParams }: { searchParams: Promi
           ))}
           {days.map((d) => {
             const k = dayKey(d);
-            const inMonth = d.getMonth() === m - 1;
+            const dp = zonedParts(d);
+            const inMonth = dp.month === m;
             return (
               <div key={k} className={`min-h-28 bg-white p-1.5 ${inMonth ? "" : "opacity-40"}`}>
-                <div className={`mb-1 text-xs ${k === today ? "inline-block rounded-full bg-brand-600 px-1.5 text-white" : "text-slate-400"}`}>{d.getDate()}</div>
+                <div className={`mb-1 text-xs ${k === today ? "inline-block rounded-full bg-brand-600 px-1.5 text-white" : "text-slate-400"}`}>{dp.day}</div>
                 <div className="space-y-1">
                   {(byDay.get(k) ?? []).map((p) => (
                     <Link key={p.id} href={`/conteudo/${p.id}`} className={`block truncate rounded px-1.5 py-0.5 text-[11px] ${postStatusColor[p.status]}`} title={`${p.company.name}: ${p.title}`}>

@@ -4,9 +4,7 @@ import { db } from "@/lib/db";
 import { Badge, Field, PageHeader, Section } from "@/components/ui";
 import { CopyButton, SubmitButton } from "@/components/client";
 import { sendContractAction, updateContract } from "../../../actions";
-import { appUrl, contractStatusLabel, date } from "@/lib/utils";
-
-const d = (v?: Date | null) => (v ? v.toISOString().slice(0, 10) : "");
+import { appUrl, contractStatusLabel, date, toInputDate as d } from "@/lib/utils";
 
 export default async function ContratoDetalhe({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

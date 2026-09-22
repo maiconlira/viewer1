@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 
 // Rotas públicas: login, páginas de aprovação/assinatura do cliente, webhooks e cron (têm segredo próprio).
-const PUBLIC = [/^\/login/, /^\/aprovar\//, /^\/contrato\//, /^\/api\/webhooks\//, /^\/api\/cron\//, /^\/api\/auth\//, /^\/api\/health/];
+const PUBLIC = [/^\/login/, /^\/aprovar\//, /^\/contrato\//, /^\/relatorio\//, /^\/api\/webhooks\//, /^\/api\/cron\//, /^\/api\/auth\//, /^\/api\/health/];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

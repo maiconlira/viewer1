@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { SubmitButton } from "@/components/client";
-import { publicApprove, publicRequestChanges } from "../../actions";
+import { publicApprove, publicRequestChanges } from "../../public-actions";
 import { AGENCY_NAME, date } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
