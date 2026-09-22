@@ -1,0 +1,390 @@
+// Agência OS — modelo de dados
+// Tudo gira em torno de Company (cliente da agência). Leads viram Company quando fecham.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Clientes ───────────────────────────
+
+enum CompanyStatus {
+  ONBOARDING
+  ACTIVE
+  PAUSED
+  CHURNED
+}
+
+model Company {
+  id              String        @id @default(cuid())
+  name            String
+  segment         String?
+  contactName     String?
+  whatsapp        String?       @unique // somente dígitos, com DDI (ex: 5511999999999)
+  email           String?
+  document        String? // CNPJ/CPF
+  instagram       String?
+  status          CompanyStatus @default(ONBOARDING)
+  monthlyFee      Decimal?      @db.Decimal(12, 2)
+  billingDay      Int?
+  brandVoice      String?       @db.Text // tom de voz usado pela IA
+  brandGuidelines String?       @db.Text // cores, público, o que evitar
+  notes           String?       @db.Text
+  postsPerMonth   Int?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  posts         Post[]
+  ideas         Idea[]
+  contracts     Contract[]
+  invoices      Invoice[]
+  tasks         Task[]
+  media         MediaAsset[]
+  conversations Conversation[]
+  activities    Activity[]
+  leads         Lead[]         @relation("ConvertedLead")
+}
+
+// ─────────────────────────── Conteúdo ───────────────────────────
+
+enum PostStatus {
+  IDEA
+  PRODUCTION
+  PENDING_APPROVAL
+  CHANGES_REQUESTED
+  APPROVED
+  SCHEDULED
+  PUBLISHED
+}
+
+enum Platform {
+  INSTAGRAM
+  FACEBOOK
+  TIKTOK
+  LINKEDIN
+  YOUTUBE
+  OTHER
+}
+
+enum PostFormat {
+  FEED
+  CAROUSEL
+  REELS
+  STORY
+  VIDEO
+  TEXT
+}
+
+model Post {
+  id            String      @id @default(cuid())
+  companyId     String
+  company       Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ideaId        String?
+  idea          Idea?       @relation(fields: [ideaId], references: [id], onDelete: SetNull)
+  title         String
+  caption       String?     @db.Text
+  hashtags      String?     @db.Text
+  briefing      String?     @db.Text // instrução visual para gerar a arte
+  platform      Platform    @default(INSTAGRAM)
+  format        PostFormat  @default(FEED)
+  status        PostStatus  @default(IDEA)
+  scheduledAt   DateTime?
+  publishedAt   DateTime?
+  approvalToken String      @unique @default(cuid())
+  approvedAt    DateTime?
+  feedback      String?     @db.Text // último pedido de alteração do cliente
+  sentForApprovalAt DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  media MediaAsset[]
+
+  @@index([companyId, status])
+  @@index([scheduledAt])
+}
+
+enum IdeaStatus {
+  NEW
+  APPROVED
+  DISCARDED
+  CONVERTED
+}
+
+model Idea {
+  id          String     @id @default(cuid())
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title       String
+  description String?    @db.Text
+  source      String     @default("ADMIN") // ADMIN | AI | CLIENT
+  status      IdeaStatus @default(NEW)
+  createdAt   DateTime   @default(now())
+  posts       Post[]
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+}
+
+enum MediaStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+model MediaAsset {
+  id         String      @id @default(cuid())
+  companyId  String?
+  company    Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  postId     String?
+  post       Post?       @relation(fields: [postId], references: [id], onDelete: SetNull)
+  kind       MediaKind   @default(IMAGE)
+  prompt     String?     @db.Text
+  url        String?
+  status     MediaStatus @default(PENDING)
+  provider   String? // fal | upload
+  externalId String? // id do job assíncrono no provedor
+  statusUrl  String?
+  resultUrl  String?
+  error      String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+}
+
+// ─────────────────────────── Contratos e financeiro ───────────────────────────
+
+enum ContractStatus {
+  DRAFT
+  SENT
+  SIGNED
+  CANCELED
+  EXPIRED
+}
+
+model Contract {
+  id           String         @id @default(cuid())
+  companyId    String
+  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title        String
+  body         String         @db.Text
+  value        Decimal?       @db.Decimal(12, 2)
+  startDate    DateTime?
+  endDate      DateTime?
+  status       ContractStatus @default(DRAFT)
+  publicToken  String         @unique @default(cuid())
+  sentAt       DateTime?
+  signedAt     DateTime?
+  signedByName String?
+  signedByDoc  String?
+  signedIp     String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELED
+}
+
+model Invoice {
+  id          String        @id @default(cuid())
+  companyId   String
+  company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  description String
+  amount      Decimal       @db.Decimal(12, 2)
+  dueDate     DateTime
+  status      InvoiceStatus @default(PENDING)
+  paidAt      DateTime?
+  paymentLink String?
+  remindedAt  DateTime?
+  createdAt   DateTime      @default(now())
+}
+
+// ─────────────────────────── Operação ───────────────────────────
+
+enum TaskStatus {
+  TODO
+  DOING
+  DONE
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  companyId   String?
+  company     Company?   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  leadId      String?
+  lead        Lead?      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  title       String
+  description String?    @db.Text
+  status      TaskStatus @default(TODO)
+  priority    Int        @default(2) // 1 alta, 2 normal, 3 baixa
+  forAdmin    Boolean    @default(false) // escalonado pela IA para o dono decidir
+  dueDate     DateTime?
+  createdBy   String     @default("ADMIN") // ADMIN | nome do agente
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+// ─────────────────────────── Funcionários de IA ───────────────────────────
+
+enum AgentRole {
+  SDR // primeiro contato / qualificação
+  CLOSER // proposta e fechamento
+  ACCOUNT_MANAGER // atendimento de clientes ativos (aprovações, dúvidas)
+  POST_SALES // onboarding e sucesso do cliente
+  CONTENT // redator/estrategista de conteúdo
+  FINANCE // cobrança
+}
+
+model Agent {
+  id           String    @id @default(cuid())
+  name         String
+  role         AgentRole
+  persona      String    @db.Text // instruções de personalidade e processo
+  goals        String?   @db.Text
+  active       Boolean   @default(true)
+  isDefault    Boolean   @default(false) // padrão para a função
+  followUpDays Int       @default(2)
+  maxFollowUps Int       @default(3)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  leads         Lead[]
+  conversations Conversation[]
+}
+
+// ─────────────────────────── Prospecção ───────────────────────────
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  MEETING
+  PROPOSAL
+  WON
+  LOST
+}
+
+model Lead {
+  id                 String    @id @default(cuid())
+  name               String
+  businessName       String?
+  segment            String?
+  phone              String?   @unique
+  email              String?
+  instagram          String?
+  source             String? // indicação, instagram, lista, site...
+  stage              LeadStage @default(NEW)
+  estimatedValue     Decimal?  @db.Decimal(12, 2)
+  notes              String?   @db.Text
+  aiSummary          String?   @db.Text
+  agentId            String?
+  agent              Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  nextFollowUpAt     DateTime?
+  followUpCount      Int       @default(0)
+  lastContactAt      DateTime?
+  lostReason         String?
+  convertedCompanyId String?
+  convertedCompany   Company?  @relation("ConvertedLead", fields: [convertedCompanyId], references: [id], onDelete: SetNull)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  conversations Conversation[]
+  tasks         Task[]
+  activities    Activity[]
+
+  @@index([stage])
+  @@index([nextFollowUpAt])
+}
+
+// ─────────────────────────── WhatsApp ───────────────────────────
+
+enum ConversationMode {
+  AI
+  HUMAN
+}
+
+model Conversation {
+  id            String           @id @default(cuid())
+  phone         String           @unique
+  contactName   String?
+  companyId     String?
+  company       Company?         @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  leadId        String?
+  lead          Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  agentId       String?
+  agent         Agent?           @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  mode          ConversationMode @default(AI)
+  unread        Int              @default(0)
+  lastMessageAt DateTime         @default(now())
+  createdAt     DateTime         @default(now())
+  messages      Message[]
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+model Message {
+  id             String           @id @default(cuid())
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      MessageDirection
+  author         String // CONTACT | AI:<nome> | ADMIN | SYSTEM
+  body           String           @db.Text
+  mediaUrl       String?
+  externalId     String?          @unique
+  status         String           @default("SENT") // SENT | FAILED | DRY_RUN | RECEIVED
+  error          String?
+  createdAt      DateTime         @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// ─────────────────────────── Ordens e auditoria ───────────────────────────
+
+enum CommandStatus {
+  RUNNING
+  DONE
+  FAILED
+}
+
+model Command {
+  id        String        @id @default(cuid())
+  prompt    String        @db.Text
+  status    CommandStatus @default(RUNNING)
+  result    String?       @db.Text
+  steps     Json? // log das ferramentas executadas
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  type      String // post.approved, lead.stage, contract.signed, whatsapp.in ...
+  summary   String
+  actor     String   @default("SYSTEM")
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  leadId    String?
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  data      Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}

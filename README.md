@@ -1,3 +1,9 @@
+# Agência OS + Typebot
+
+> **Novo:** a pasta [`platform/`](platform/README.md) tem a **Agência OS**, plataforma completa para gerir a agência com funcionários de IA: WhatsApp, aprovação de postagens, cronograma, ideias, contratos, financeiro, prospecção e o Diretor IA que executa suas ordens. Veja [platform/README.md](platform/README.md).
+>
+> O restante deste repositório continua sendo o template do Typebot para Railway (`builder/` e `viewer/`).
+
 # Typebot - Railway Template
 
 This example template to deploy a self-hosted version of [Typebot](https://typebot.io). 
